@@ -4,9 +4,16 @@ import torch
 import random
 import numpy
 import time
+import multiprocessing as mp
+import copy
+
+try:
+    torch.multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
 
 # mp.set_start_method('spawn')
-import torch.multiprocessing as mp
+# import torch.multiprocessing as mp
 
 # check if torch can run:
 if torch.cuda.is_available() == True:
@@ -88,17 +95,19 @@ class NN:
         # gradients = torch.zeros(self.structure[l+1]).cuda()
         for j in range(0, self.structure[l]):
             # calculate gradient
-            w1 = self.weights.copy()
+            w1 = copy.deepcopy(self.weights)
             w1[l][j][k] += self.dw
             L1 = self.loss(self.train_input,
                            self.train_output, w1, self.biases)
-            w1[l][j][k] += -2 * self.dw
+            w1[l][j][k] -= 2 * self.dw
             L2 = self.loss(self.train_input,
                            self.train_output, w1, self.biases)
+            # restore w1 because we need it
+            w1[l][j][k] += self.dw
             gradient = (L1 - L2) / (2 * self.dw)
-            self.weights[l][j][k] += -self.learning_rate * gradient
+            w1[l][j][k] += -self.learning_rate * gradient
 
-        b1 = self.biases.copy()
+        b1 = copy.deepcopy(self.biases)
         b1[l][k] += self.db
         B1 = self.loss(self.train_input,
                        self.train_output, self.weights, b1)
@@ -106,30 +115,37 @@ class NN:
         B2 = self.loss(self.train_input,
                        self.train_output, self.weights, b1)
         gradient = (B1 - B2) / (2 * self.db)
+        b1[l][k] += self.db
 
-        self.biases[l][k] += -self.learning_rate * gradient
+        b1[l][k] += -self.learning_rate * gradient
+
+        return ([w1, b1])
+
+    def submit(self, results):
+        self.weights = results[0]
+        self.biases = results[1]
 
     def backpropagation(self):
 
-        processes = []
+        manager = mp.Manager()
+        return_dict = manager.dict()
 
         for l in range(0, self.param_length):
             for k in range(0, self.structure[l+1]):
-                # p = mp.Process(target=self.gradient_calculation, args=(l, k))
-                self.gradient_calculation(l, k)
-                #         p.start()
-                #         processes.append(p)
-                #
-                # for p in processes:
-                #     p.join()
+                pool.apply_async(self.gradient_calculation,
+                                 args=(l, k), callback=self.submit)
+
+        pool.close()
+        pool.join()
 
     def train(self, train_input, train_output):
         # firstly, share arrays in memory:
-        for item in self.weights:
-            item.share_memory_()
-
-        for item in self.biases:
-            item.share_memory_()
+        print("Preparing GPU ")
+        # for item in self.weights:
+        #     item.share_memory_()
+        #
+        # for item in self.biases:
+        #     item.share_memory_()
 
         # run once for a benchmark
         self.train_input = train_input
@@ -151,7 +167,8 @@ class NN:
         print("new ", new_loss)
 
         # loop until we have reached the tolerance level required:
-        while new_loss < benchmark:
+        print("Begin iterations")
+        while (new_loss < benchmark) or (epoch < 100):
             benchmark = new_loss
             start = time.time()
             self.backpropagation()
@@ -161,8 +178,10 @@ class NN:
             epoch += 1
             print(new_loss)
 
+        print("finished")
 
-structure = [10, 20, 100, 100, 10]
+
+structure = [10, 100, 100, 2]
 # train_input = []
 # train_output = []
 
@@ -176,12 +195,13 @@ structure = [10, 20, 100, 100, 10]
 # train_input = torch.tensor(train_input, device=device)
 # train_output = torch.tensor(train_output, device=device)
 
-train_input = torch.normal(0, 1, size=(10, structure[0])).cuda()
-train_output = torch.normal(0, 1, size=(10, structure[-1])).cuda()
+train_input = torch.normal(0, 1, size=(100, structure[0])).cuda()
+train_output = torch.normal(0, 1, size=(100, structure[-1])).cuda()
 # print(train_input.size())
 
-AI = NN(structure)
-weights, biases = AI.load_parameters()
-AI.forward_propagation(train_input, weights, biases)
-loss = AI.loss(train_input, train_output, weights, biases)
-AI.train(train_input, train_output)
+if __name__ == "__main__":
+    AI = NN(structure)
+    weights, biases = AI.load_parameters()
+    AI.forward_propagation(train_input, weights, biases)
+    loss = AI.loss(train_input, train_output, weights, biases)
+    AI.train(train_input, train_output)
